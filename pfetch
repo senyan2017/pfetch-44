@@ -159,23 +159,63 @@ log() {
     info_height=$((${info_height:-0} + 1))
 }
 
-get_title() {
-    # Username is retrieved by first checking '$USER' with a fallback
-    # to the 'id -un' command.
-    user=${USER:-$(id -un)}
-
-    # Hostname is retrieved by first checking '$HOSTNAME' with a fallback
-    # to the 'hostname' command.
+get_hostname() {
+    # Resolve the system hostname for the title line. This is one of the
+    # most basic pieces of information yet it is surprisingly fragile in
+    # stripped down environments: the 'hostname' command is frequently
+    # absent from minimal container images and '/etc/hostname' is not
+    # always present either. We therefore try, in order:
     #
+    #   1. '$HOSTNAME'                 (user override / shell-provided)
+    #   2. a pre-set '$hostname'       (e.g. from '$PF_SOURCE')
+    #   3. the 'hostname' command      (only if it actually exists)
+    #   4. '/etc/hostname'             (only if the file exists)
+    #   5. '/proc/sys/kernel/hostname' (present on Linux even in containers)
+    #   6. 'unknown'                   (last-resort placeholder)
+    #
+    # Each step is only attempted while '$hostname' is still empty and each
+    # file/command is guarded so we never emit "command not found" or
+    # "No such file" noise in debug mode ('pfetch -d').
+    #
+    # The optional arguments override the file locations and exist purely so
+    # the regression tests can exercise the degraded paths with fixtures.
+    _etc_hostname=${1:-/etc/hostname}
+    _proc_hostname=${2:-/proc/sys/kernel/hostname}
+
     # Disable the warning about '$HOSTNAME' being undefined in POSIX sh as
     # the intention for using it is allowing the user to overwrite the
     # value on invocation.
     # shellcheck disable=3028,2039
-    hostname=${HOSTNAME:-${hostname:-$(hostname)}}
+    hostname=${HOSTNAME:-${hostname:-}}
 
-    # If the hostname is still not found, fallback to the contents of the
-    # /etc/hostname file.
-    [ "$hostname" ] || read -r hostname < /etc/hostname
+    # Only invoke the 'hostname' command if it genuinely exists, otherwise
+    # a missing binary spams stderr with "command not found".
+    [ "$hostname" ] || ! has hostname || hostname=$(hostname 2>/dev/null)
+
+    # Fall back to the contents of '/etc/hostname', but only when the file
+    # exists so a missing file doesn't trigger a redirection error.
+    [ "$hostname" ] || [ ! -f "$_etc_hostname" ] ||
+        read -r hostname < "$_etc_hostname" 2>/dev/null
+
+    # As a final file-based fallback, read the kernel-exported hostname.
+    # On Linux this is available even inside otherwise empty containers.
+    [ "$hostname" ] || [ ! -r "$_proc_hostname" ] ||
+        read -r hostname < "$_proc_hostname" 2>/dev/null
+
+    # Never leave the title with an empty hostname (dangling '@').
+    hostname=${hostname:-unknown}
+}
+
+get_title() {
+    # Username is retrieved by first checking '$USER' with fallbacks to
+    # '$LOGNAME' and the 'id -un' command. Minimal environments may lack
+    # all three, so we finally fall back to a placeholder to avoid
+    # printing a dangling '@hostname'.
+    user=${USER:-${LOGNAME:-$(id -un 2>/dev/null)}}
+    user=${user:-unknown}
+
+    # Resolve the hostname through the fallback chain in get_hostname().
+    get_hostname
 
     # Add escape sequences for coloring to user and host name. As we embed
     # them directly in the arguments passed to log(), we cannot use esc_p().
@@ -191,6 +231,54 @@ get_title() {
     hostname=$e$hostname
 
     log "${user}@${hostname}" " " " " >&6
+}
+
+parse_os_release() {
+    # Parse an os-release file into '$distro'. The format is plain
+    # 'key=value' (values optionally quoted) so, as with the original
+    # inline parser, we deliberately treat the file as plain text rather
+    # than sourcing it (which would blindly execute arbitrary shell).
+    #
+    # '$PRETTY_NAME' is preferred. Minimal images frequently populate only
+    # a subset of the fields though, so we gracefully degrade to 'NAME'
+    # (plus 'VERSION' or 'VERSION_ID' when present) and finally the bare
+    # 'ID'. Returns non-zero (leaving '$distro' untouched) when the file is
+    # missing or contains none of these keys, allowing the caller to try
+    # another location or fall back.
+    [ -f "$1" ] || return 1
+
+    osr_pretty=''
+    osr_name=''
+    osr_version=''
+    osr_version_id=''
+    osr_id=''
+
+    while IFS='=' read -r key val; do
+        # Strip a single layer of surrounding quotes from the value.
+        val=${val##[\"\']}
+        val=${val%%[\"\']}
+
+        case $key in
+            (PRETTY_NAME) osr_pretty=$val ;;
+            (NAME)        osr_name=$val ;;
+            (VERSION)     osr_version=$val ;;
+            (VERSION_ID)  osr_version_id=$val ;;
+            (ID)          osr_id=$val ;;
+        esac
+    done < "$1"
+
+    if [ "$osr_pretty" ]; then
+        distro=$osr_pretty
+    elif [ "$osr_name" ]; then
+        distro=$osr_name
+        osr_ver=${osr_version:-$osr_version_id}
+        [ "$osr_ver" ] && distro="$distro $osr_ver"
+    elif [ "$osr_id" ]; then
+        distro=$osr_id
+    fi
+
+    # Report success only when a name was actually found.
+    [ "$distro" ]
 }
 
 get_os() {
@@ -229,39 +317,51 @@ get_os() {
             # This applies only to distributions which follow the standard
             # by shipping unmodified identification files and packages
             # from their respective upstreams.
+            # Try 'lsb_release' first, but only accept a non-empty result.
+            # Minimal images sometimes ship a stub 'lsb_release' that prints
+            # nothing; in that case we must fall through to the methods
+            # below rather than ending up with an empty distribution name.
             if has lsb_release; then
-                distro=$(lsb_release -sd)
-
-            # Android detection works by checking for the existence of
-            # the follow two directories. I don't think there's a simpler
-            # method than this.
-            elif [ -d /system/app ] && [ -d /system/priv-app ]; then
-                distro="Android $(getprop ro.build.version.release)"
-
-            elif [ -f /etc/os-release ]; then
-                # This used to be a simple '. /etc/os-release' but I believe
-                # this is insecure as we blindly executed whatever was in the
-                # file. This parser instead simply handles 'key=val', treating
-                # the file contents as plain-text.
-                while IFS='=' read -r key val; do
-                    case $key in
-                        (PRETTY_NAME)
-                            distro=$val
-                        ;;
-                    esac
-                done < /etc/os-release
-
-            else
-                # Special cases for (independent) distributions which
-                # don't follow any os-release/lsb standards whatsoever.
-                has crux && distro=$(crux)
-                has guix && distro='Guix System'
+                distro=$(lsb_release -sd 2>/dev/null)
             fi
+
+            # Android detection works by checking for the existence of the
+            # following two directories. 'getprop' is guarded so a missing
+            # binary doesn't leave a dangling "Android " behind.
+            if [ -z "$distro" ] && [ -d /system/app ] && [ -d /system/priv-app ]; then
+                distro="Android"
+                if has getprop; then
+                    android_version=$(getprop ro.build.version.release 2>/dev/null)
+                    [ "$android_version" ] && distro="Android $android_version"
+                fi
+            fi
+
+            # Parse os-release. Per the specification '/etc/os-release' is
+            # the primary location with a fallback to '/usr/lib/os-release'.
+            # parse_os_release() degrades from PRETTY_NAME to NAME/ID so
+            # non-standard files (common in minimal images) still yield a
+            # usable name.
+            if [ -z "$distro" ]; then
+                parse_os_release /etc/os-release ||
+                    parse_os_release /usr/lib/os-release || :
+            fi
+
+            # Special cases for (independent) distributions which
+            # don't follow any os-release/lsb standards whatsoever.
+            [ "$distro" ] || { has crux && distro=$(crux); }
+            [ "$distro" ] || { has guix && distro='Guix System'; }
 
             # 'os-release' and 'lsb_release' sometimes add quotes
             # around the distribution name, strip them.
             distro=${distro##[\"\']}
             distro=${distro%%[\"\']}
+
+            # Final safety net: never leave '$distro' empty in stripped
+            # down environments (containers, rescue shells). This mirrors
+            # the generic '$os $kernel' form used for the other operating
+            # systems below and keeps the output looking like a deliverable
+            # system summary rather than a blank field.
+            [ "$distro" ] || distro="Linux $kernel"
 
             # Check to see if we're running Bedrock Linux which is
             # very unique. This simply checks to see if the user's
@@ -272,22 +372,22 @@ get_os() {
                 ;;
             esac
 
-            # Check to see if Linux is running in Windows 10 under
-            # WSL1 (Windows subsystem for Linux [version 1]) and
-            # append a string accordingly.
+            # Check to see if Linux is running in Windows under WSL2
+            # (Windows subsystem for Linux [version 2]) and append a
+            # string accordingly.
             #
-            # If the kernel version string ends in "-Microsoft",
-            # we're very likely running under Windows 10 in WSL1.
+            # This checks to see if '$WSLENV' is defined. WSL exports this
+            # variable, so we only need to check that it has been
+            # _exported_ (it may legitimately be empty).
             if [ "$WSLENV" ]; then
                 distro="${distro}${WSLENV+ on Windows 10 [WSL2]}"
 
-            # Check to see if Linux is running in Windows 10 under
-            # WSL2 (Windows subsystem for Linux [version 2]) and
-            # append a string accordingly.
+            # Check to see if Linux is running in Windows under WSL1
+            # (Windows subsystem for Linux [version 1]) and append a
+            # string accordingly.
             #
-            # This checks to see if '$WSLENV' is defined. This
-            # appends the Windows 10 string even if '$WSLENV' is
-            # empty. We only need to check that is has been _exported_.
+            # If the kernel version string ends in "-Microsoft",
+            # we're very likely running under Windows in WSL1.
             elif [ -z "${kernel%%*-Microsoft}" ]; then
                 distro="$distro on Windows 10 [WSL1]"
             fi

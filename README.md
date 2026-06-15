@@ -40,6 +40,29 @@ picture"!
 - **IRIX**
 - **SerenityOS**
 
+## Minimal and degraded environments
+
+`pfetch` is frequently run inside containers, stripped-down images and
+remote rescue environments where commands and standard files cannot be
+relied upon. Detection of the most basic information degrades gracefully
+in these environments instead of producing blank fields or broken text:
+
+- **Distribution** is resolved in order from `lsb_release` (used only when
+  it actually returns a value), Android, then `/etc/os-release` with a
+  fallback to `/usr/lib/os-release`. Within the os-release file
+  `PRETTY_NAME` is preferred, falling back to `NAME` (plus `VERSION` or
+  `VERSION_ID`) and finally the bare `ID`. If none of these are available
+  it falls back to `Linux <kernel>`, so the OS field is never empty.
+- **Hostname** is resolved from `$HOSTNAME`, then the `hostname` command
+  (only if it exists), then `/etc/hostname`, then
+  `/proc/sys/kernel/hostname`, and finally the placeholder `unknown`.
+- **User** is resolved from `$USER`, then `$LOGNAME`, then `id -un`, and
+  finally `unknown`.
+
+Missing commands and files are probed defensively, so even debug mode
+(`pfetch -d`, which shows `stderr`) stays free of `command not found` and
+`No such file` noise.
+
 ## Configuration
 
 `pfetch` is configured through environment variables.
@@ -118,6 +141,19 @@ SHELL=""
 
 # Which desktop environment to display.
 XDG_CURRENT_DESKTOP=""
+```
+
+## Testing
+
+A small POSIX `sh` regression suite exercises the minimal-environment
+detection paths described above (non-standard `os-release` files, a missing
+or broken `hostname` command, an absent `/etc/hostname`, simulated WSL, and
+a broken `lsb_release`). Run it with:
+
+```sh
+make test
+# or directly
+sh tests/minimal-env.sh
 ```
 
 ## Credit

@@ -8,3 +8,8 @@ install:
 
 uninstall:
 	@rm -f $(DESTDIR)$(PREFIX)/bin/pfetch
+
+test:
+	@sh tests/minimal-env.sh
+
+.PHONY: all install uninstall test

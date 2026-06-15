@@ -8,4 +8,8 @@ jobs:
     - name: Run shellcheck.
       run: |
         shellcheck pfetch
+        shellcheck tests/minimal-env.sh
         TERM=dumb sh pfetch
+    - name: Run minimal-environment regression tests.
+      run: |
+        sh tests/minimal-env.sh
