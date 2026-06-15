@@ -59,6 +59,18 @@ PF_INFO="ascii"
 # Example: Only Information.
 PF_INFO="title os host kernel uptime pkgs memory"
 
+# Output mode.
+# Default: unset (rich/interactive: ascii art, colors, alignment)
+# Valid: plain
+#
+# 'plain' is an automation-friendly mode for CI logs, login banners
+# and shell pipelines. It disables ascii art, colors and cursor-based
+# alignment and prints one field per line as 'name<sep>value' (see
+# 'PF_SEP'). All other 'PF_*' options still apply, so 'PF_INFO' keeps
+# controlling which fields are shown and in what order.
+# See the "Automation / scripting" section below for examples.
+PF_MODE="plain"
+
 # A file to source before running pfetch.
 # Default: unset
 # Valid: A shell script
@@ -67,6 +79,10 @@ PF_SOURCE=""
 # Separator between info name and info data.
 # Default: unset
 # Valid: string
+#
+# In 'PF_MODE=plain' this is the field separator and defaults to a
+# single space (so output parses with 'read -r key value'). Set it to
+# something like ': ' for human-readable banners.
 PF_SEP=":"
 
 # Enable/Disable colors in output:
@@ -119,6 +135,64 @@ SHELL=""
 # Which desktop environment to display.
 XDG_CURRENT_DESKTOP=""
 ```
+
+## Automation / scripting
+
+For CI logs, init/provisioning scripts and login banners the rich
+ascii-art output gets in the way. Set `PF_MODE=plain` to switch to a
+lightweight mode that prints one `name value` pair per line with **no**
+ascii art, **no** colors and **no** cursor-based alignment. Everything
+else about the configuration is unchanged, so `PF_INFO` still selects the
+fields and their order and `PF_SEP` still sets the separator.
+
+```sh
+$ PF_MODE=plain pfetch
+user@host
+os Ubuntu 22.04.3 LTS
+host ...
+kernel 6.5.0-14-generic
+uptime 3h 12m
+pkgs 1893
+memory 2451M / 15888M
+```
+
+**Login / SSH banner.** Drop a snippet in `/etc/profile.d` (or append to
+a user's shell rc) for a clean banner that won't smear color codes into
+logs or non-interactive sessions:
+
+```sh
+# /etc/profile.d/zz-pfetch-banner.sh
+PF_MODE=plain PF_SEP=": " PF_INFO="title os kernel uptime" pfetch
+```
+
+**No-color CI / build logs.** Plain mode already disables color, so the
+output stays readable when captured to a file or a CI web UI:
+
+```sh
+PF_MODE=plain pfetch | tee system-info.log
+```
+
+**Only the key fields.** Use `PF_INFO` to pin exactly which fields are
+emitted and in what order — handy when a later step greps for specific
+values:
+
+```sh
+PF_MODE=plain PF_INFO="title os kernel memory" pfetch
+```
+
+**Consuming the output from shell.** With the default space separator the
+first word is the key and the rest is the value, so a plain `read` loop
+works:
+
+```sh
+PF_MODE=plain PF_INFO="os kernel memory" pfetch |
+    while read -r key value; do
+        printf 'detected %s = %s\n' "$key" "$value"
+    done
+```
+
+> The `title` field prints just `user@host` with no value, so omit it
+> (as above) when you want strict `key value` pairs for parsing.
 
 ## Credit
 

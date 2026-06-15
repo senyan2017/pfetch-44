@@ -112,6 +112,39 @@ log() {
     # End here if no data was found.
     [ "$2" ] || return
 
+    # Plain mode ('PF_MODE=plain'): emit simple, script-friendly output
+    # with no colors, no cursor movement and no alignment. Each field is
+    # printed on its own line as 'name<sep>value' where the separator
+    # defaults to a single space (overridable via 'PF_SEP'). This makes
+    # the output trivial to parse from shell with 'read -r key value'.
+    # Fields with no value (such as the title) print just the name.
+    #
+    # The call site already redirects to '>&6', so a plain 'printf' here
+    # lands on the real stdout just like the interactive path below.
+    if [ "$PF_MODE" = plain ]; then
+        # Save the field name *before* 'set --' below clobbers the
+        # positional parameters (otherwise '$1' would become the first
+        # word of the value).
+        name=$1
+
+        # Normalize surrounding/internal whitespace, mirroring the
+        # interactive path. 'set -f' disables globbing so this is safe.
+        # shellcheck disable=2046,2086
+        {
+            set -f
+            set +f -- $2
+            info=$*
+        }
+
+        if [ "$info" ]; then
+            printf '%s%s%s\n' "$name" "${PF_SEP:- }" "$info"
+        else
+            printf '%s\n' "$name"
+        fi
+
+        return
+    fi
+
     # Store the values of '$1' and '$3' as we reset the argument list below.
     name=$1
     use_seperator=$3
@@ -1102,6 +1135,12 @@ get_palette() {
 }
 
 get_ascii() {
+    # In plain mode ('PF_MODE=plain') the ascii art is skipped entirely
+    # so the output stays clean for CI logs, login banners and scripts.
+    # This guard also covers the recursive 'get_ascii "$os"' call and any
+    # leftover 'ascii' entry in 'PF_INFO'.
+    [ "$PF_MODE" = plain ] && return
+
     # This is a simple function to read the contents of
     # an ascii file from 'stdin'. It allows for the use
     # of '<<-EOF' to prevent the break in indentation in
@@ -1882,6 +1921,15 @@ EOF
     # case on Android where the temporary directory requires root.
     [ -w "${TMPDIR:-/tmp}" ] || export TMPDIR=~
 
+    # Plain mode ('PF_MODE=plain') is the automation-friendly output mode
+    # for CI logs, login banners and shell pipelines. It disables ascii
+    # art, colors and cursor-based alignment while keeping the rest of the
+    # 'PF_*' configuration system intact: 'PF_INFO' still selects fields
+    # and their order, and 'PF_SEP' still sets the separator. Color is
+    # turned off here (before the palette is built) so the title and the
+    # generated color list contain no escape sequences.
+    [ "$PF_MODE" = plain ] && export PF_COLOR=0
+
     # Generic color list.
     # Disable warning about unused variables.
     # shellcheck disable=2034
@@ -1893,8 +1941,13 @@ EOF
     # Disable line wrapping and catch the EXIT signal to enable it again
     # on exit. Ideally you'd somehow query the current value and retain
     # it but I'm yet to see this irk anyone.
-    esc_p DECAWM l >&6
-    trap 'esc_p DECAWM h >&6' EXIT
+    #
+    # Plain mode must not emit any terminal control sequences, so both the
+    # line-wrap toggle and its restoring trap are skipped there.
+    [ "$PF_MODE" = plain ] || {
+        esc_p DECAWM l >&6
+        trap 'esc_p DECAWM h >&6' EXIT
+    }
 
     # Store the output of 'uname' to avoid calling it multiple times
     # throughout the script. 'read <<EOF' is the simplest way of reading
@@ -1943,16 +1996,22 @@ EOF
     # N lines.
     #
     # This was a ternary operation but they aren't supported in Minix's shell.
-    [ "${info_height:-0}" -lt "${ascii_height:-0}" ] &&
-        cursor_pos=$((ascii_height - info_height))
+    #
+    # In plain mode there is no ascii art to align against and every field
+    # already ends with its own newline, so this whole block is skipped to
+    # avoid emitting stray blank lines.
+    [ "$PF_MODE" = plain ] || {
+        [ "${info_height:-0}" -lt "${ascii_height:-0}" ] &&
+            cursor_pos=$((ascii_height - info_height))
 
-    # Print '$cursor_pos' amount of newlines to correctly position the
-    # cursor. This used to be a 'printf $(seq X X)' however 'seq' is only
-    # typically available (by default) on GNU based systems!
-    while [ "${i:=0}" -le "${cursor_pos:-0}" ]; do
-        printf '\n'
-        i=$((i + 1))
-    done >&6
+        # Print '$cursor_pos' amount of newlines to correctly position the
+        # cursor. This used to be a 'printf $(seq X X)' however 'seq' is only
+        # typically available (by default) on GNU based systems!
+        while [ "${i:=0}" -le "${cursor_pos:-0}" ]; do
+            printf '\n'
+            i=$((i + 1))
+        done >&6
+    }
 }
 
 main "$@"
