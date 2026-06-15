@@ -40,6 +40,60 @@ picture"!
 - **IRIX**
 - **SerenityOS**
 
+## Internal architecture
+
+Although pfetch is delivered as a single file, the source is organized
+into clearly delimited sections so you can modify one area without
+re-reading the entire script:
+
+| Section      | Responsibility                                      |
+|--------------|-----------------------------------------------------|
+| `[TERMINAL]` | Escape-sequence primitives (`esc`, `esc_p`)         |
+| `[UTILITY]`  | General helpers (`has`)                             |
+| `[CONFIG]`   | Configuration loading, color map initialization     |
+| `[DETECT]`   | System information probes (each sets `_pf_val`)     |
+| `[ASCII]`    | ASCII art data, selection, and measurement          |
+| `[RENDER]`   | Info-line rendering and layout engine               |
+| `[MAIN]`     | Entry point and orchestration                       |
+
+**Data flow:**
+
+```
+config_init → detect_platform / detect_distro → main loop:
+  for each PF_INFO item:
+    "ascii"  → ascii_init (print art, set dimensions)
+    other    → detect_<item> (set _pf_val) → render_info (print line)
+  → render_finish (position cursor below output)
+```
+
+**Key design rules:**
+
+- Detection functions (`detect_*`) never print directly.  They store
+  their result in `_pf_val` and the rendering engine decides how to
+  display it.
+- All visible output goes through `render_info()`, so color, alignment,
+  and separator behavior are consistent across every module.
+- Cross-section shared state is limited to a documented set of `_pf_*`
+  variables listed in the file header.
+
+## Available info modules
+
+| Module    | What it shows                        | Enabled by default |
+|-----------|--------------------------------------|:------------------:|
+| `ascii`   | Distribution ASCII art               |         yes        |
+| `title`   | `user@hostname`                      |         yes        |
+| `os`      | OS / distribution name               |         yes        |
+| `host`    | Machine model / product name         |         yes        |
+| `kernel`  | Kernel release (`uname -r`)          |         yes        |
+| `uptime`  | System uptime                        |         yes        |
+| `pkgs`    | Installed package count              |         yes        |
+| `memory`  | Used / total RAM                     |         yes        |
+| `shell`   | Current shell (`$SHELL`)             |         no         |
+| `editor`  | Editor (`$VISUAL` or `$EDITOR`)      |         no         |
+| `wm`      | Window manager (X11 only)            |         no         |
+| `de`      | Desktop environment                  |         no         |
+| `palette` | Terminal color swatches              |         no         |
+
 ## Configuration
 
 `pfetch` is configured through environment variables.
@@ -75,7 +129,7 @@ PF_SEP=":"
 PF_COLOR=1
 
 # Color of info names:
-# Default: unset (auto)
+# Default: unset (auto from ASCII art)
 # Valid: 0-9
 PF_COL1=4
 
@@ -85,18 +139,18 @@ PF_COL1=4
 PF_COL2=9
 
 # Color of title data:
-# Default: unset (auto)
+# Default: unset (auto from ASCII art)
 # Valid: 0-9
 PF_COL3=1
 
 # Alignment padding.
-# Default: unset (auto)
+# Default: unset (auto, based on longest info label)
 # Valid: int
 PF_ALIGN=""
 
 # Which ascii art to use.
-# Default: unset (auto)
-# Valid: string
+# Default: unset (auto-detect from distribution)
+# Valid: string (e.g. "arch", "ubuntu", "openbsd")
 PF_ASCII="openbsd"
 
 # The below environment variables control more
@@ -119,6 +173,18 @@ SHELL=""
 # Which desktop environment to display.
 XDG_CURRENT_DESKTOP=""
 ```
+
+## Testing
+
+A test suite covering core behaviors lives in `test/`:
+
+```sh
+sh test/pfetch-test.sh
+```
+
+It validates CLI flags, individual info modules, color control,
+separator/alignment behavior, layout combinations, and edge cases.
+No root or network access required.
 
 ## Credit
 

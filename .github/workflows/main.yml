@@ -9,3 +9,5 @@ jobs:
       run: |
         shellcheck pfetch
         TERM=dumb sh pfetch
+    - name: Run test suite.
+      run: sh test/pfetch-test.sh

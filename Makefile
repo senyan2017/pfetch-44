@@ -1,5 +1,7 @@
 PREFIX ?= /usr
 
+.PHONY: all install uninstall test
+
 all:
 	@echo RUN \'make install\' to install pfetch
 
@@ -8,3 +10,7 @@ install:
 
 uninstall:
 	@rm -f $(DESTDIR)$(PREFIX)/bin/pfetch
+
+test:
+	@shellcheck pfetch
+	@sh test/pfetch-test.sh
