@@ -161,21 +161,34 @@ log() {
 
 get_title() {
     # Username is retrieved by first checking '$USER' with a fallback
-    # to the 'id -un' command.
-    user=${USER:-$(id -un)}
+    # to the 'id -un' command, then to 'whoami'.
+    user=${USER:-$(id -un 2>/dev/null)}
+    user=${user:-$(whoami 2>/dev/null)}
 
-    # Hostname is retrieved by first checking '$HOSTNAME' with a fallback
-    # to the 'hostname' command.
+    # Hostname is retrieved through a cascade of fallbacks:
+    # 1. '$HOSTNAME' environment variable (user override)
+    # 2. 'hostname' command
+    # 3. '/etc/hostname' file
+    # 4. 'uname -n' as the final fallback (works in most containers)
     #
     # Disable the warning about '$HOSTNAME' being undefined in POSIX sh as
     # the intention for using it is allowing the user to overwrite the
     # value on invocation.
     # shellcheck disable=3028,2039
-    hostname=${HOSTNAME:-${hostname:-$(hostname)}}
+    hostname=${HOSTNAME:-${hostname:-$(hostname 2>/dev/null)}}
 
-    # If the hostname is still not found, fallback to the contents of the
-    # /etc/hostname file.
-    [ "$hostname" ] || read -r hostname < /etc/hostname
+    # Fallback to /etc/hostname if hostname command failed or wasn't available
+    if [ -z "$hostname" ] && [ -f /etc/hostname ]; then
+        read -r hostname < /etc/hostname 2>/dev/null
+    fi
+
+    # Final fallback: 'uname -n' which is POSIX and works in most
+    # environments including minimal containers.
+    hostname=${hostname:-$(uname -n 2>/dev/null)}
+
+    # If we still have no hostname, use a generic placeholder to avoid
+    # printing an ugly "user@" with nothing after it.
+    hostname=${hostname:-unknown}
 
     # Add escape sequences for coloring to user and host name. As we embed
     # them directly in the arguments passed to log(), we cannot use esc_p().
@@ -190,7 +203,7 @@ get_title() {
     esc SGR "3${PF_COL3:-1}"
     hostname=$e$hostname
 
-    log "${user}@${hostname}" " " " " >&6
+    log "${user:-unknown}@${hostname}" " " " " >&6
 }
 
 get_os() {
@@ -229,37 +242,88 @@ get_os() {
             # This applies only to distributions which follow the standard
             # by shipping unmodified identification files and packages
             # from their respective upstreams.
-            if has lsb_release; then
-                distro=$(lsb_release -sd)
-
             # Android detection works by checking for the existence of
             # the follow two directories. I don't think there's a simpler
-            # method than this.
-            elif [ -d /system/app ] && [ -d /system/priv-app ]; then
-                distro="Android $(getprop ro.build.version.release)"
+            # method than this. This is checked first because some Android
+            # environments may ship a stub lsb_release or os-release that
+            # doesn't reflect the actual platform.
+            if [ -d /system/app ] && [ -d /system/priv-app ]; then
+                distro="Android$(getprop ro.build.version.release 2>/dev/null | sed 's/^/ /')"
+                # getprop may fail; trim trailing whitespace
+                distro=${distro%% }
 
-            elif [ -f /etc/os-release ]; then
+            elif has lsb_release; then
+                distro=$(lsb_release -sd 2>/dev/null)
+            fi
+
+            # If lsb_release failed or wasn't available, try /etc/os-release.
+            # This parser handles 'key=val' as plain text, treating quoted
+            # values correctly. Falls back from PRETTY_NAME to NAME if the
+            # former is missing or empty.
+            if [ -z "$distro" ] && [ -f /etc/os-release ]; then
                 # This used to be a simple '. /etc/os-release' but I believe
                 # this is insecure as we blindly executed whatever was in the
                 # file. This parser instead simply handles 'key=val', treating
                 # the file contents as plain-text.
                 while IFS='=' read -r key val; do
+                    # Strip surrounding quotes from value
+                    val=${val#\"}; val=${val%\"}
+                    val=${val#\'}; val=${val%\'}
                     case $key in
                         (PRETTY_NAME)
-                            distro=$val
+                            distro_pretty=$val
+                        ;;
+                        (NAME)
+                            distro_name=$val
+                        ;;
+                        (VERSION)
+                            distro_ver=$val
                         ;;
                     esac
                 done < /etc/os-release
 
-            else
-                # Special cases for (independent) distributions which
-                # don't follow any os-release/lsb standards whatsoever.
+                # Prefer PRETTY_NAME, fall back to NAME (+ VERSION if present)
+                distro=${distro_pretty:-${distro_name:+$distro_name${distro_ver:+ $distro_ver}}}
+            fi
+
+            # Fallback to /etc/lsb-release (some older distros use this)
+            if [ -z "$distro" ] && [ -f /etc/lsb-release ]; then
+                while IFS='=' read -r key val; do
+                    val=${val#\"}; val=${val%\"}
+                    val=${val#\'}; val=${val%\'}
+                    case $key in
+                        (DISTRIB_DESCRIPTION)
+                            distro=$val
+                        ;;
+                        (DISTRIB_ID)
+                            distro_id=$val
+                        ;;
+                    esac
+                done < /etc/lsb-release
+                distro=${distro:-$distro_id}
+            fi
+
+            # Fallback to /etc/issue (very basic, strip escape sequences)
+            if [ -z "$distro" ] && [ -f /etc/issue ]; then
+                read -r distro < /etc/issue
+                # Strip common escape sequences from /etc/issue
+                distro=${distro%%\\*}
+                # Trim trailing whitespace
+                distro=${distro%% *}
+            fi
+
+            # Special cases for (independent) distributions which
+            # don't follow any os-release/lsb standards whatsoever.
+            if [ -z "$distro" ]; then
                 has crux && distro=$(crux)
                 has guix && distro='Guix System'
             fi
 
             # 'os-release' and 'lsb_release' sometimes add quotes
             # around the distribution name, strip them.
+            # Apply multiple passes to handle nested/double quoting.
+            distro=${distro##[\"\']}
+            distro=${distro%%[\"\']}
             distro=${distro##[\"\']}
             distro=${distro%%[\"\']}
 
@@ -271,6 +335,12 @@ get_os() {
                     distro='Bedrock Linux'
                 ;;
             esac
+
+            # Final fallback: if distro is still empty, use 'uname -o'
+            # which returns "GNU/Linux" on most Linux systems. This ensures
+            # we never display a blank OS field.
+            distro=${distro:-$(uname -o 2>/dev/null)}
+            distro=${distro:-Linux}
 
             # Check to see if Linux is running in Windows 10 under
             # WSL1 (Windows subsystem for Linux [version 1]) and
@@ -411,12 +481,23 @@ get_host() {
         (Linux*)
             # Despite what these files are called, version doesn't
             # always contain the version nor does name always contain
-            # the name.
-            read -r name    < /sys/devices/virtual/dmi/id/product_name
-            read -r version < /sys/devices/virtual/dmi/id/product_version
-            read -r model   < /sys/firmware/devicetree/base/model
+            # the name. In containers and minimal environments these
+            # sysfs files may not exist, so redirect stderr.
+            read -r name    < /sys/devices/virtual/dmi/id/product_name    2>/dev/null
+            read -r version < /sys/devices/virtual/dmi/id/product_version 2>/dev/null
+            read -r model   < /sys/firmware/devicetree/base/model         2>/dev/null
 
             host="$name $version $model"
+
+            # In containers (Docker, LXC, etc.) DMI info is often unavailable.
+            # Check for container environment indicators and use them as host.
+            if [ -z "$host" ] || [ "$host" = "  " ]; then
+                if [ -f /.dockerenv ]; then
+                    host="Docker container"
+                elif grep -q 'docker\|lxc\|kubepods\|containerd' /proc/1/cgroup 2>/dev/null; then
+                    host="Container"
+                fi
+            fi
         ;;
 
         (Darwin* | FreeBSD* | DragonFly*)
@@ -468,7 +549,7 @@ get_host() {
            (To      | [Bb]e      | [Ff]illed | [Bb]y  | O.E.M.  | OEM  |\
             Not     | Applicable | Specified | System | Product | Name |\
             Version | Undefined  | Default   | string | INVALID | �    | os |\
-            Type1ProductConfigId )
+            Type1ProductConfigId | None )
                 continue
             ;;
         esac
@@ -486,7 +567,10 @@ get_uptime() {
     # math.
     case $os in
         (Linux* | Minix* | SerenityOS*)
-            IFS=. read -r s _ < /proc/uptime
+            # /proc/uptime may not be available in all container environments
+            if [ -f /proc/uptime ]; then
+                IFS=. read -r s _ < /proc/uptime
+            fi
         ;;
 
         (Darwin* | *BSD* | DragonFly*)
@@ -542,9 +626,15 @@ get_uptime() {
     esac
 
     # Convert the uptime from seconds into days, hours and minutes.
-    d=$((s / 60 / 60 / 24))
-    h=$((s / 60 / 60 % 24))
-    m=$((s / 60 % 60))
+    # Guard against empty/invalid uptime values (e.g., in containers
+    # where /proc/uptime is not readable).
+    case "$s" in
+        (*[0-9]*)
+            d=$((s / 60 / 60 / 24))
+            h=$((s / 60 / 60 % 24))
+            m=$((s / 60 % 60))
+        ;;
+    esac
 
     # Only append days, hours and minutes if they're non-zero.
     case "$d" in ([!0]*) uptime="${uptime}${d}d "; esac
@@ -694,6 +784,8 @@ get_memory() {
         # MemUsed = MemTotal + Shmem - MemFree - Buffers - Cached - SReclaimable
         # Source: https://github.com/KittyKatt/screenFetch/issues/386
         (Linux*)
+            # /proc/meminfo may not be available in all container environments
+            if [ -f /proc/meminfo ]; then
             # Parse the '/proc/meminfo' file splitting on ':' and 'k'.
             # The format of the file is 'key:   000kB' and an additional
             # split is used on 'k' to filter out 'kB'.
@@ -732,6 +824,7 @@ get_memory() {
             esac
 
             mem_full=$((mem_full / 1024))
+            fi
         ;;
 
         # Used memory is calculated using the following "formula":

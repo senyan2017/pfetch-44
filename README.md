@@ -40,6 +40,27 @@ picture"!
 - **IRIX**
 - **SerenityOS**
 
+### Minimal / container environments
+
+`pfetch` is designed to degrade gracefully when running in stripped-down
+environments such as Docker/LXC containers, rescue shells, or minimal
+chroot images. The following fallback chain is used for core fields:
+
+- **OS / distro**: `lsb_release` → `/etc/os-release` → `/etc/lsb-release`
+  → `/etc/issue` → `uname -o` → `Linux`. Android is detected via
+  `/system/app` and `/system/priv-app` before any of the above.
+- **Hostname**: `$HOSTNAME` → `hostname` command → `/etc/hostname`
+  → `uname -n` → `unknown`.
+- **Host hardware**: DMI sysfs files → container indicator (e.g.
+  "Docker container") → `$arch` as last resort.
+- **Uptime**: `/proc/uptime`; silently omitted when unavailable.
+- **Memory**: `/proc/meminfo`; shows `?` placeholders when unavailable.
+- **Packages**: omitted when no supported package manager is found or
+  the count is zero.
+
+Fields that cannot be determined are suppressed from the output rather
+than displayed as empty or partial lines.
+
 ## Configuration
 
 `pfetch` is configured through environment variables.
