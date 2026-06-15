@@ -74,6 +74,14 @@ PF_SEP=":"
 # Valid: 1 (enabled), 0 (disabled)
 PF_COLOR=1
 
+# Output mode for automation (CI, init scripts, login banners).
+# When set to 'plain', 'ci', or 'script', pfetch disables ASCII art,
+# colors, and cursor manipulation. Output becomes simple "key value"
+# lines suitable for log files and piping to other tools.
+# Default: unset (interactive terminal mode with ASCII and colors)
+# Valid: unset, plain, ci, script
+PF_MODE=plain
+
 # Color of info names:
 # Default: unset (auto)
 # Valid: 0-9
@@ -119,6 +127,72 @@ SHELL=""
 # Which desktop environment to display.
 XDG_CURRENT_DESKTOP=""
 ```
+
+## DevOps / Automation usage
+
+`pfetch` supports a plain output mode designed for CI pipelines,
+init scripts, login banners, and any context where colored terminal
+output with ASCII art is not desirable.
+
+Set `PF_MODE=plain` (or `ci` / `script`) to get clean, parseable
+`key value` lines with no escape sequences:
+
+```sh
+# Basic plain output (default fields, no ASCII art)
+PF_MODE=plain pfetch
+# huang@myhost
+# os Ubuntu 24.04.2 LTS
+# host VMware Virtual Platform
+# kernel 6.8.0-40-generic
+# uptime 2h 4m
+# pkgs 1981
+# memory 6548M / 12039M
+```
+
+### Login banner (e.g. /etc/profile.d/pfetch.sh)
+
+```sh
+# Show a compact plain-text summary on SSH login
+PF_MODE=plain PF_INFO="title os kernel uptime memory" pfetch
+```
+
+### CI log / init script (no color, key fields only)
+
+```sh
+# Log system info at the start of a CI job
+PF_MODE=ci PF_INFO="os kernel memory" PF_SEP=": " pfetch
+# os: Ubuntu 24.04.2 LTS
+# kernel: 6.8.0-40-generic
+# memory: 6548M / 12039M
+```
+
+### Feeding output to other shell scripts
+
+Use `PF_SEP` and `PF_INFO` together for machine-readable output
+that can be sourced or parsed line by line:
+
+```sh
+# Export system info as shell variables
+eval "$(PF_MODE=script PF_SEP='=' PF_INFO="os kernel" pfetch | \
+    sed 's/^/SYS_/;s/ /=/')"
+# SYS_os=Ubuntu 24.04.2 LTS  ->  SYS_OS="Ubuntu 24.04.2 LTS"
+# SYS_kernel=6.8.0-40-generic ->  SYS_KERNEL="6.8.0-40-generic"
+
+# Or read line by line
+PF_MODE=plain PF_SEP="=" PF_INFO="os kernel memory" pfetch | \
+while IFS='=' read -r key val; do
+    echo "detected $key => $val"
+done
+```
+
+### Quick reference
+
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `PF_MODE` | `plain`/`ci`/`script` disables ASCII+colors | `PF_MODE=plain` |
+| `PF_INFO` | Select and order output fields | `PF_INFO="os kernel"` |
+| `PF_SEP` | Separator between key and value | `PF_SEP=": "` |
+| `PF_COLOR` | Force colors on/off (auto-off in plain mode) | `PF_COLOR=0` |
 
 ## Credit
 

@@ -129,6 +129,22 @@ log() {
         info=$*
     }
 
+    # Plain mode: output simple "name value" lines suitable for
+    # CI logs, init scripts and other non-interactive consumers.
+    # No colors, no cursor movement, no alignment padding.
+    case ${PF_MODE} in
+        (plain|ci|script)
+            if [ "$use_seperator" ]; then
+                printf '%s\n' "$name" >&6
+            else
+                printf '%s%s%s\n' "$name" "${PF_SEP:- }" "$info" >&6
+            fi
+
+            info_height=$((${info_height:-0} + 1))
+            return
+        ;;
+    esac
+
     # Move the cursor to the right, the width of the ascii art with an
     # additional gap for text spacing.
     esc_p CUF "$ascii_width"
@@ -176,6 +192,15 @@ get_title() {
     # If the hostname is still not found, fallback to the contents of the
     # /etc/hostname file.
     [ "$hostname" ] || read -r hostname < /etc/hostname
+
+    # In plain/CI/script mode, skip color escape sequences entirely
+    # so the output is clean for log consumers and scripts.
+    case ${PF_MODE} in
+        (plain|ci|script)
+            log "${user}@${hostname}" " " " " >&6
+            return
+        ;;
+    esac
 
     # Add escape sequences for coloring to user and host name. As we embed
     # them directly in the arguments passed to log(), we cannot use esc_p().
@@ -1079,6 +1104,9 @@ get_editor() {
 }
 
 get_palette() {
+    # Skip palette output in plain/CI/script modes.
+    case ${PF_MODE} in (plain|ci|script) return ;; esac
+
     # Print the first 8 terminal colors. This uses the existing
     # sequences to change text color with a sequence prepended
     # to reverse the foreground and background colors.
@@ -1102,6 +1130,9 @@ get_palette() {
 }
 
 get_ascii() {
+    # Skip ASCII art in plain/CI/script modes — no terminal art needed.
+    case ${PF_MODE} in (plain|ci|script) return ;; esac
+
     # This is a simple function to read the contents of
     # an ascii file from 'stdin'. It allows for the use
     # of '<<-EOF' to prevent the break in indentation in
@@ -1877,6 +1908,14 @@ EOF
     # shellcheck source=/dev/null
     ! [ -f "$PF_SOURCE" ] || . "$PF_SOURCE"
 
+    # In plain/CI/script mode, force colors off and skip terminal
+    # manipulation (line wrapping, cursor positioning, ASCII art).
+    case ${PF_MODE} in
+        (plain|ci|script)
+            PF_COLOR=0
+        ;;
+    esac
+
     # Ensure that the 'TMPDIR' is writable as heredocs use it and
     # fail without the write permission. This was found to be the
     # case on Android where the temporary directory requires root.
@@ -1893,8 +1932,17 @@ EOF
     # Disable line wrapping and catch the EXIT signal to enable it again
     # on exit. Ideally you'd somehow query the current value and retain
     # it but I'm yet to see this irk anyone.
-    esc_p DECAWM l >&6
-    trap 'esc_p DECAWM h >&6' EXIT
+    # Skip terminal mode manipulation in plain/CI/script modes.
+    case ${PF_MODE} in
+        (plain|ci|script)
+            # no DECAWM changes needed
+        ;;
+
+        (*)
+            esc_p DECAWM l >&6
+            trap 'esc_p DECAWM h >&6' EXIT
+        ;;
+    esac
 
     # Store the output of 'uname' to avoid calling it multiple times
     # throughout the script. 'read <<EOF' is the simplest way of reading
@@ -1909,12 +1957,22 @@ EOF
 
     # Allow the user to specify the order and inclusion of information
     # functions through the 'PF_INFO' environment variable.
+    # In plain/CI/script modes, default to no ASCII art.
     # shellcheck disable=2086
     {
         # Disable globbing and set the positional parameters to the
         # contents of 'PF_INFO'.
         set -f
-        set +f -- ${PF_INFO-ascii title os host kernel uptime pkgs memory}
+
+        case ${PF_MODE} in
+            (plain|ci|script)
+                set +f -- ${PF_INFO-title os host kernel uptime pkgs memory}
+            ;;
+
+            (*)
+                set +f -- ${PF_INFO-ascii title os host kernel uptime pkgs memory}
+            ;;
+        esac
 
         # Iterate over the info functions to determine the lengths of the
         # "info names" for output alignment. The option names and subtitles
@@ -1936,6 +1994,13 @@ EOF
             "get_$info"
         done
     }
+
+    # In plain/CI/script modes, no cursor repositioning needed.
+    case ${PF_MODE} in
+        (plain|ci|script)
+            return 0
+        ;;
+    esac
 
     # Position the cursor below both the ascii art and information lines
     # according to the height of both. If the information exceeds the ascii
