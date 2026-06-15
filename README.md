@@ -11,7 +11,9 @@ the language itself (*where possible*).
 The source code is highly documented and I hope it will
 act as a learning resource for POSIX `sh` and simple
 information detection across various different operating
-systems.
+systems. It is organized into small, single-responsibility
+modules under `src/` (see [Building and hacking](#building-and-hacking))
+and assembled into the single `pfetch` script you run.
 
 If anything in the source code is unclear or is lacking
 in its explanation, open an issue. Sometimes you get too
@@ -119,6 +121,41 @@ SHELL=""
 # Which desktop environment to display.
 XDG_CURRENT_DESKTOP=""
 ```
+
+## Building and hacking
+
+`pfetch` is *delivered* as one self-contained POSIX `sh` script — drop the
+`pfetch` file onto any machine and run it, no build step required. It is
+*developed* as a handful of focused modules under `src/`, assembled into that
+single script by `build.sh`, so that editing one concern does not mean reading
+the whole program:
+
+| Module | Responsibility |
+| --- | --- |
+| `src/00_header.sh` | Banner + the shared-state contract (read this first) |
+| `src/10_terminal.sh` | Terminal escapes, the color/alignment model, command detection |
+| `src/20_layout.sh` | `log()`: the art-aware info layout / printing engine |
+| `src/30_info.sh` | Detection + info modules (`detect_os`, `get_os`, `get_kernel`, …) |
+| `src/40_ascii.sh` | `get_ascii()`: the ascii-art table and size measurement |
+| `src/90_main.sh` | Config parsing, the three render phases, the entry point |
+
+```sh
+./build.sh        # assemble src/*.sh into ./pfetch  (or: make)
+make test         # run the behavioral checks in tests/
+make check        # shellcheck the assembled script + helper scripts
+```
+
+`pfetch` is a generated file: **edit the modules in `src/`, then rebuild.**
+CI fails if the committed `pfetch` does not match a fresh build of `src/`.
+
+Detection and rendering are kept apart. Distribution detection runs once
+(`detect_os`) before any output, and the info modules (`get_*`) only print, so
+behavior no longer depends on which function happened to run first. The handful
+of variables shared between modules (`$os`, `$distro`, `$ascii_width`, …) are
+documented as an explicit contract at the top of `src/00_header.sh`. The only
+ordering rule that remains is that **`ascii` must be listed first in
+`PF_INFO`**, because it establishes the geometry every info line is drawn
+against.
 
 ## Credit
 

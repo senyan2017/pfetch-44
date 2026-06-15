@@ -2,6 +2,8 @@ root = true
 
 # Force GitHub to display tabs
 # mixed with [4] spaces properly.
-[pfetch]
+# Covers the assembled script and the source modules it is built from
+# (several modules use tab-stripped <<-EOF heredocs for ascii art/data).
+[{pfetch,src/*.sh}]
 indent_style = tab
 indent_size  = 4

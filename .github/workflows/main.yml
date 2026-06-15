@@ -1,11 +1,28 @@
-name: Shellcheck
-on: [push]
+name: CI
+on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
-    - name: Run shellcheck.
+    - uses: actions/checkout@v4
+
+    # pfetch is generated from src/ by build.sh. Make sure the committed
+    # bundle is in sync, so nobody edits a module and forgets to rebuild.
+    - name: Verify committed pfetch matches src/
       run: |
-        shellcheck pfetch
-        TERM=dumb sh pfetch
+        ./build.sh /tmp/pfetch.ci
+        if ! cmp -s pfetch /tmp/pfetch.ci; then
+          echo "::error::pfetch is out of sync with src/. Run ./build.sh and commit the result."
+          diff pfetch /tmp/pfetch.ci || true
+          exit 1
+        fi
+
+    - name: Shellcheck
+      run: make check
+
+    - name: Behavioral tests
+      run: make test
+
+    # Original smoke check: the assembled script must run on a dumb terminal.
+    - name: Smoke
+      run: TERM=dumb sh pfetch
